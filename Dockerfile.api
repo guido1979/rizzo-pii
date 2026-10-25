@@ -1,0 +1,94 @@
+# ============================================================================
+# Rizzo PII Private API — microservizio REST privato (solo API, niente UI).
+#
+#   docker build -f Dockerfile.api -t rizzo-pii-api .
+#   docker run --rm --read-only --tmpfs /tmp:size=512m,mode=1777,noexec,nosuid \
+#     -e RIZZO_API_KEYS="mio-backend:$(openssl rand -hex 32)" \
+#     --network rete-privata rizzo-pii-api
+#
+# NESSUNA porta pubblicata: il servizio e' raggiungibile solo dai container
+# sulla stessa rete Docker (vedi docker-compose.coolify.yml e docs/PRIVATE_API.md).
+#
+# Differenze rispetto a `Dockerfile` (webapp con UI, che resta invariato):
+#   - entry point rizzo_api.wsgi: solo /api/v1/* e /health, l'UI non e' montata;
+#   - root filesystem pensato per girare in SOLA LETTURA: tutto cio' che e'
+#     scrivibile (HOME, TMPDIR, cache HF) punta a /tmp, da montare come tmpfs;
+#   - il modello si scarica in uno stage separato: nell'immagine finale non c'e'
+#     alcuno strumento di download configurato e a runtime HF_HUB_OFFLINE=1.
+# ============================================================================
+
+# --- stage 1: modello (unico momento in cui si esce verso Hugging Face) -----
+FROM python:3.11-slim AS model
+ARG MODEL_REPO=rizzoaiacademy/rizzo-pii-0.3B
+ARG MODEL_REVISION=v1.5.0
+RUN pip install --no-cache-dir "huggingface_hub>=0.34,<2" \
+ && python -c "from huggingface_hub import snapshot_download; \
+snapshot_download('${MODEL_REPO}', revision='${MODEL_REVISION}', local_dir='/model', \
+allow_patterns=['*.json','*.safetensors','*.txt','*.model'])" \
+ && rm -rf /model/.cache \
+ && test -f /model/config.json
+
+# --- stage 2: runtime ---------------------------------------------------------
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# libgomp1: runtime OpenMP richiesto dai kernel CPU di torch.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+ && rm -rf /var/lib/apt/lists/*
+
+# Versioni PINNATE: torch/transformers come nel Dockerfile della webapp; flask,
+# werkzeug, pymupdf e gunicorn alle versioni con cui la suite tests/test_api_*.py
+# e' stata eseguita. In particolare _InMemoryRequest (server.py) si appoggia a
+# Request._get_file_stream di Werkzeug: aggiornando Werkzeug, rieseguire i test
+# sulla persistenza (test_api_stateless.py).
+#
+# PyMuPDF resta sulla 1.x: la 2.0 dipende da pymupdf_layout/pymupdf4llm e da
+# onnxruntime, che viene importato insieme a `pymupdf` e all'avvio scrive in
+# ~/.cache un device id, un file di sessione e un database di eventi di
+# telemetria (Microsoft 1DS). Nessuna di queste funzioni serve alla redazione.
+RUN pip install --index-url https://download.pytorch.org/whl/cpu "torch==2.13.0" \
+ && pip install "transformers==5.14.1" tokenizers safetensors \
+      "flask==3.1.3" "werkzeug==3.1.9" "pymupdf==1.28.2" "gunicorn==26.2.0" \
+ && python -c "import sys, pymupdf; sys.exit('onnxruntime' in sys.modules)"
+
+WORKDIR /app/src
+COPY --from=model /model /app/models/rizzo-pii-0.3B-v1.5.0
+# Motore originale (invariato): solo i moduli Python, non asset/UI di build.
+COPY src/app/app.py src/app/detectors.py src/app/pdf_export.py \
+     src/app/pdf_text.py src/app/server_config.py /app/src/app/
+COPY src/rizzo_api/ /app/src/rizzo_api/
+
+# Utente senza privilegi e senza home persistente; il codice resta di root e
+# in sola lettura per l'utente del servizio.
+RUN useradd --no-create-home --home-dir /tmp --shell /usr/sbin/nologin --uid 10001 rizzo
+USER 10001:10001
+
+# Tutto cio' che una libreria potrebbe voler scrivere finisce in /tmp (tmpfs a
+# runtime). XDG_DATA_HOME: app.py all'import legge (in sola lettura) le
+# preferenze dell'UI da li' — su tmpfs non ce ne sono, quindi valgono i default.
+ENV HOME=/tmp \
+    TMPDIR=/tmp \
+    XDG_DATA_HOME=/tmp/xdg \
+    XDG_CACHE_HOME=/tmp/cache \
+    HF_HOME=/tmp/hf \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    PII_MODEL_DIR=/app/models/rizzo-pii-0.3B-v1.5.0 \
+    PYTHONPATH=/app/src \
+    RIZZO_API_PORT=5005 \
+    OMP_NUM_THREADS=4
+
+EXPOSE 5005
+
+# /health non richiede autenticazione e risponde solo da reti ammesse
+# (il loopback lo e'). start-period: caricamento a freddo del modello.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
+  CMD python -c "import urllib.request,sys; \
+sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/health', timeout=4).status==200 else 1)"
+
+CMD ["gunicorn", "-c", "/app/src/rizzo_api/gunicorn_conf.py", "rizzo_api.wsgi:application"]

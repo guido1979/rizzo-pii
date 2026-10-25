@@ -1,0 +1,99 @@
+# docker-compose.coolify.yml — Rizzo PII Private API, deployment PRIVATO su Coolify
+#
+# Il servizio NON ha porte pubblicate, NON ha un dominio, NON passa dal reverse
+# proxy pubblico: e' raggiungibile solo dai container collegati alla rete
+# Docker privata `rizzo-pii-private`, con l'hostname `rizzo-pii-api`.
+#
+# Prima del primo deploy (una volta sola, sul server Coolify):
+#   docker network create --driver bridge --internal rizzo-pii-private
+#   (--internal: la rete non ha uscita verso Internet; il servizio non ne ha bisogno)
+#
+# In Coolify:
+#   - Resource "Docker Compose", file: docker-compose.coolify.yml
+#   - NON assegnare un dominio al servizio (nessun SERVICE_FQDN_*, nessun "Domains")
+#   - variabili d'ambiente (segrete): RIZZO_API_KEYS (obbligatoria)
+# Dettagli, collegamento delle app client e verifiche: docs/PRIVATE_API.md
+
+services:
+  rizzo-pii-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+      args:
+        MODEL_REPO: rizzoaiacademy/rizzo-pii-0.3B
+        MODEL_REVISION: v1.5.0
+    image: rizzo-pii-api:local
+    restart: unless-stopped
+
+    # Solo porta INTERNA: nessuna sezione `ports`, quindi niente bind sull'host.
+    expose:
+      - "5005"
+
+    environment:
+      # Obbligatoria: "client_a:chiave_a,client_b:chiave_b" (chiavi >= 32 caratteri,
+      # es. `openssl rand -hex 32`). Senza, il deploy fallisce invece di partire aperto.
+      RIZZO_API_KEYS: ${RIZZO_API_KEYS:?Imposta RIZZO_API_KEYS nelle variabili segrete di Coolify}
+      RIZZO_API_MAX_UPLOAD_MB: ${RIZZO_API_MAX_UPLOAD_MB:-20}
+      RIZZO_API_MAX_PAGES: ${RIZZO_API_MAX_PAGES:-300}
+      RIZZO_API_MAX_TEXT_CHARS: ${RIZZO_API_MAX_TEXT_CHARS:-1000000}
+      RIZZO_API_REQUEST_TIMEOUT: ${RIZZO_API_REQUEST_TIMEOUT:-300}
+      RIZZO_API_MAX_CONCURRENT: ${RIZZO_API_MAX_CONCURRENT:-2}
+      RIZZO_API_QUEUE_TIMEOUT: ${RIZZO_API_QUEUE_TIMEOUT:-15}
+      RIZZO_API_RATE_LIMIT_PER_MINUTE: ${RIZZO_API_RATE_LIMIT_PER_MINUTE:-60}
+      RIZZO_API_ALLOW_RETURN_MAPPING: ${RIZZO_API_ALLOW_RETURN_MAPPING:-false}
+      RIZZO_API_LOG_LEVEL: ${RIZZO_API_LOG_LEVEL:-INFO}
+      # Default: solo reti private (RFC1918, loopback, ULA). Restringi alla subnet
+      # della rete rizzo-pii-private se la conosci (docker network inspect).
+      RIZZO_API_ALLOWED_NETWORKS: ${RIZZO_API_ALLOWED_NETWORKS:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7}
+      OMP_NUM_THREADS: ${OMP_NUM_THREADS:-4}
+
+    # --- irrigidimento -------------------------------------------------------
+    user: "10001:10001"
+    read_only: true                      # root filesystem in sola lettura
+    tmpfs:
+      # unica area scrivibile, in RAM: HOME, TMPDIR, cache HF puntano qui
+      - /tmp:size=512m,mode=1777,noexec,nosuid,nodev
+    shm_size: "64m"                      # /dev/shm (heartbeat di gunicorn), anch'esso in RAM
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+
+    # --- risorse -----------------------------------------------------------
+    # memswap_limit = mem_limit: niente swap per questo container, quindi le
+    # pagine di memoria con i documenti non vengono scritte nello swap su disco
+    # (vale se il kernel dell'host supporta il controllo dello swap nel cgroup).
+    mem_limit: ${RIZZO_API_MEMORY_LIMIT:-6g}
+    memswap_limit: ${RIZZO_API_MEMORY_LIMIT:-6g}
+    cpus: ${RIZZO_API_CPUS:-4}
+
+    # /health risponde solo da reti ammesse: il loopback del container lo e'.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:5005/health', timeout=4).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 120s
+      retries: 3
+
+    networks:
+      rizzo-private:
+        aliases:
+          - rizzo-pii-api
+
+    # Nessun volume: niente documenti, niente dizionari, niente cache su disco.
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  rizzo-private:
+    external: true
+    name: ${RIZZO_PRIVATE_NETWORK:-rizzo-pii-private}

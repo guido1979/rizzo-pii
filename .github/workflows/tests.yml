@@ -40,3 +40,22 @@ jobs:
       # in piu': l'inferenza del modello non e' sotto test.
       - name: unittest discover
         run: python -m unittest discover -v tests
+
+  # Private API (src/rizzo_api): servono flask e pymupdf, NON torch — il motore
+  # e' sostituito da un finto con la stessa interfaccia (tests/_api_support.py),
+  # quindi l'installazione costa secondi, non gigabyte. Versioni come Dockerfile.api.
+  api:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dipendenze della Private API (senza torch)
+        run: pip install "flask==3.1.3" "werkzeug==3.1.9" "pymupdf==1.28.2"
+
+      - name: unittest della Private API
+        run: python -m unittest discover -v -s tests -p "test_api_*.py"

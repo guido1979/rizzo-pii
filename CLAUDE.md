@@ -147,6 +147,21 @@ modelli in `models/<versione>/`, artefatti dei run in `experiments/<run>/`, doc 
   `desktop_app.py` — entry PyInstaller legacy (apre il browser); stesso pre-check.
   `assets/` — mascotte (il riccio) + icone. `smoke_app.py`, `make_test_pdf.py`.
 
+**Private API — `src/rizzo_api/` (+ `Dockerfile.api`, `docker-compose.coolify.yml`, doc in
+`docs/PRIVATE_API.md`):** microservizio REST privato per i backend di altre applicazioni.
+**Non modifica il motore**: `engine.py` importa `app.py` e usa `app.analyze()` (l'oggetto Flask
+dell'UI resta in memoria ma non viene servito); `pdf_pipeline.py` riusa gli helper di
+`pdf_export`/`pdf_text`. Aggiunge: auth `Bearer` (chiavi solo da env `RIZZO_API_KEYS`/`_FILE`,
+digest SHA-256 + `compare_digest`), allowlist di rete, rate limit e slot di concorrenza per
+processo, timeout **cooperativo** (`_GuardedPipeline` a lotti di 8 chunk, lock sul modello),
+upload **solo in RAM** (`_InMemoryRequest`: Werkzeug spoolerebbe su disco oltre 500 KB),
+**Preserve Letterhead** decisa PRIMA della redazione (`letterhead.py`: `automatic`/`coordinates`/
+`values`; coordinate della pagina *visualizzata*, origine CropBox), CropBox allargato al MediaBox
+durante redazione (il testo fuori dall'area visibile sopravviveva a `apply_redactions`),
+`doc.scrub()` + salvataggio completo, verifica dei residui region-aware → `422` se fallisce.
+Log solo metadati. Endpoint: `/health`, `/api/v1/{anonymize,analyze,anonymize-text}`.
+Test: `tests/test_api_*.py` (motore finto, servono flask+pymupdf), `test_api_e2e.py` contro il container.
+
 **App desktop Tauri — `tauri/`:** finestra nativa **Rizzo PII** (WebView2) che lancia il backend
 `serve.py` impacchettato come **sidecar** (`build_sidecar.spec` → `tauri/src-tauri/backend/`).
 All'avvio legge `config.json` (host/porta), passa i valori al sidecar via env `PII_HOST`/`PII_PORT`,

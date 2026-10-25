@@ -10,6 +10,7 @@ The short version:
 | **This repository (source code)** | **MIT** — see [LICENSE](LICENSE) |
 | **Released binaries** (`.exe`, `.dmg`, `.deb`, `.AppImage`) | **AGPL-3.0**, because they bundle PyMuPDF |
 | **Docker image** | you build it yourself (`docker build`), so nothing combined is distributed by us — but the image you build contains PyMuPDF and is therefore AGPL-3.0 if you pass it on |
+| **Private API image** (`Dockerfile.api`) | same as the Docker image; and since it is meant to be *used over a network*, read the §13 note below and [docs/PRIVATE_API.md §13](docs/PRIVATE_API.md#13-licenze) |
 
 Nothing in this project is *relicensed* by the above. The source code is MIT everywhere, always.
 The binaries are AGPL-3.0 because an executable that embeds an AGPL library is a combined work,
@@ -47,6 +48,9 @@ The corresponding source required by §6 is this repository, which is public.
   (`--host 0.0.0.0`, or Docker on an office server), you must offer the corresponding source to
   those remote users. Running an unmodified build satisfies this by pointing at this repository.
   The default bind is `127.0.0.1`, so ordinary desktop use never triggers it.
+  The **Private API** (`src/rizzo_api/`, `Dockerfile.api`) *is* a network service and a
+  modification of this program: if parties other than its operator interact with it, offer them
+  the corresponding source of the deployed version, including your changes.
 - **If you want to ship a closed product** built on this, either replace PyMuPDF or buy the
   [Artifex commercial licence](https://artifex.com/licensing/) — that is precisely what the dual
   licensing is for.
@@ -70,7 +74,7 @@ Licences as declared on PyPI.
 | numpy | BSD-3-Clause (with 0BSD / MIT / Zlib / CC0 parts) | |
 | Flask | BSD-3-Clause | |
 | Werkzeug, Jinja2, Click, ItsDangerous, MarkupSafe | BSD-3-Clause | Flask's dependencies |
-| gunicorn | MIT | Docker image only |
+| gunicorn | MIT | Docker images only (webapp and Private API) |
 | filelock | MIT | |
 | PyYAML | MIT | |
 | tqdm | MPL-2.0 AND MIT | |
